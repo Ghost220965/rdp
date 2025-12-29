@@ -1,4 +1,4 @@
-name: Windows-RDP-Auto3h-Backup
+name: Windows-RDP-Fixed-Backup
 
 on: 
   workflow_dispatch:
@@ -13,22 +13,20 @@ jobs:
       actions: write
     
     steps:
-    - name: Instalare Ngrok si Mega (Metoda Sigura)
+    - name: Instalare Programe (Ngrok si Mega)
       run: |
-        # Folosim choco pentru a evita eroarea "Not Found"
-        choco install ngrok -y
-        # Descarcam MEGAcmd pentru backup
-        Invoke-WebRequest https://mega.nz/MEGAcmdSetup64.exe -OutFile megacmd.exe
-        Start-Process .\megacmd.exe -ArgumentList "/S" -Wait
-
+        # Instalam Ngrok si MEGAcmd folosind choco (fara erori de link)
+        choco install ngrok megacmd -y
+        
     - name: Restaurare Date din Mega
       shell: cmd
       run: |
-        set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd
+        # Adaugam calea corecta pentru MEGAcmd instalat prin choco
+        set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
         mkdir C:\RDP_Work
-        # Incarca datele daca folderul exista deja pe Mega
-        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - folderul va fi creat pe parcurs"
+        # Incearca sa descarce backup-ul daca exista
+        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - folderul va fi creat mai tarziu"
 
     - name: Configurare Windows RDP
       run: |
@@ -36,10 +34,11 @@ jobs:
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         net user runneradmin ParolaRDP123! /add
         net localgroup administrators runneradmin /add
+        # Configuram Ngrok cu token-ul tau
         ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
         Start-Process ngrok -ArgumentList "tcp 3389"
 
-    - name: Afisare Adresa si Sincronizare 3 Ore
+    - name: Conectare si Auto-Sync 3 Ore
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
@@ -51,13 +50,15 @@ jobs:
         Write-Host "PAROLA: ParolaRDP123!"
         Write-Host "=========================================="
         
+        # Sincronizare la fiecare 10 minute timp de 3 ore
         $count = 0
         while($count -lt 18) {
           Start-Sleep -Seconds 600
-          Write-Host "Sincronizare backup in Mega..."
+          Write-Host "Se salveaza backup-ul in Mega..."
+          $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
           cmd /c "mega-put -c C:\RDP_Work /RDP_Backup"
           $count++
         }
         
-        # Auto-restart la finalul celor 3 ore
+        # Repornire automata
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
