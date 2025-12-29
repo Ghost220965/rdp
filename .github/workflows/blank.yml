@@ -1,0 +1,58 @@
+name: Windows-RDP-Auto3h-Backup
+
+on: 
+  workflow_dispatch:
+  repository_dispatch:
+    types: [restart_rdp]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      actions: write
+    
+    steps:
+    - name: Pregatire
+      run: |
+        # Link nou si stabil pentru Ngrok
+        Invoke-WebRequest https://github.com/ngrok/ngrok/releases/download/v3.18.3/ngrok-v3.18.3-windows-amd64.zip -OutFile ngrok.zip
+        Expand-Archive ngrok.zip -DestinationPath .
+        Invoke-WebRequest https://mega.nz/MEGAcmdSetup64.exe -OutFile megacmd.exe
+        Start-Process .\megacmd.exe -ArgumentList "/S" -Wait
+
+    - name: Restore Backup
+      shell: cmd
+      run: |
+        set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd
+        mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
+        mkdir C:\RDP_Work
+        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup"
+
+    - name: Activeaza RDP
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        net user runneradmin ParolaRDP123! /add
+        net localgroup administrators runneradmin /add
+        .\ngrok.exe authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+        Start-Process .\ngrok.exe -ArgumentList "tcp 3389"
+
+    - name: Rulare 3 Ore si Auto-Restart
+      shell: powershell
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        $tunnels = Invoke-RestMethod http://localhost:4040/api/tunnels
+        Write-Host "=========================================="
+        Write-Host "ADRESA RDP: $($tunnels.tunnels[0].public_url)"
+        Write-Host "PAROLA: ParolaRDP123!"
+        Write-Host "=========================================="
+        
+        $count = 0
+        while($count -lt 18) {
+          Start-Sleep -Seconds 600
+          cmd /c "mega-put -c C:\RDP_Work /RDP_Backup"
+          $count++
+        }
+        gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
