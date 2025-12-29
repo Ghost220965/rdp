@@ -1,4 +1,4 @@
-name: Windows-RDP-Fixed-Backup
+name: Windows-RDP-Final-Fixed
 
 on: 
   workflow_dispatch:
@@ -13,36 +13,40 @@ jobs:
       actions: write
     
     steps:
-    - name: Instalare Programe (Ngrok si Mega)
+    - name: 1. Instalare Ngrok si Mega
       run: |
-        # Instalam Ngrok si MEGAcmd folosind choco (fara erori de link)
+        # Instalam totul prin choco pentru a evita erorile "Not Found"
         choco install ngrok megacmd -y
         
-    - name: Restaurare Date din Mega
-      shell: cmd
+    - name: 2. Restaurare Date din Mega
+      shell: pwsh
       run: |
-        # Adaugam calea corecta pentru MEGAcmd instalat prin choco
-        set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd
+        # Fortam adaugarea caii MEGAcmd in sesiune
+        $env:PATH += ";C:\Program Files\MEGAcmd"
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
-        mkdir C:\RDP_Work
-        # Incearca sa descarce backup-ul daca exista
-        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - folderul va fi creat mai tarziu"
+        if (!(Test-Path "C:\RDP_Work")) { New-Item -Path "C:\RDP_Work" -ItemType Directory }
+        # Descarca datele daca exista
+        mega-get /RDP_Backup C:\RDP_Work
+        Write-Host "Restaurare terminata."
 
-    - name: Configurare Windows RDP
+    - name: 3. Configurare si Pornire RDP
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         net user runneradmin ParolaRDP123! /add
         net localgroup administrators runneradmin /add
-        # Configuram Ngrok cu token-ul tau
         ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+        # Pornim ngrok in background
         Start-Process ngrok -ArgumentList "tcp 3389"
 
-    - name: Conectare si Auto-Sync 3 Ore
-      shell: powershell
+    - name: 4. Afisare Adresa si Auto-Sync
+      shell: pwsh
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
+        # ASTEPTAM 20 secunde ca Ngrok sa porneasca (repara eroarea din image_a3aa10.png)
+        Start-Sleep -Seconds 20
+        
         $tunnels = Invoke-RestMethod http://localhost:4040/api/tunnels
         Write-Host "=========================================="
         Write-Host "ADRESA RDP: $($tunnels.tunnels[0].public_url)"
@@ -50,15 +54,12 @@ jobs:
         Write-Host "PAROLA: ParolaRDP123!"
         Write-Host "=========================================="
         
-        # Sincronizare la fiecare 10 minute timp de 3 ore
+        $env:PATH += ";C:\Program Files\MEGAcmd"
         $count = 0
         while($count -lt 18) {
           Start-Sleep -Seconds 600
-          Write-Host "Se salveaza backup-ul in Mega..."
-          $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
-          cmd /c "mega-put -c C:\RDP_Work /RDP_Backup"
+          Write-Host "Sincronizare backup in Mega..."
+          mega-put -c C:\RDP_Work /RDP_Backup
           $count++
         }
-        
-        # Repornire automata
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
