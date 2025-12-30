@@ -1,4 +1,4 @@
-name: Windows-RDP-Bore-Fixed
+name: Windows-RDP-Bore-Final
 
 on: 
   workflow_dispatch:
@@ -16,7 +16,7 @@ jobs:
     - name: 1. Instalare Programe (Mega si Bore)
       run: |
         choco install megacmd -y
-        # Descarcam Bore (nu necesita cont sau card)
+        # Descarcam Bore - alternativa care NU cere card bancar
         Invoke-WebRequest https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-pc-windows-msvc.zip -OutFile bore.zip
         Expand-Archive bore.zip -DestinationPath .
 
@@ -26,62 +26,55 @@ jobs:
         set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
         mkdir C:\RDP_Work
-        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - folderul va fi creat la final"
+        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - se va crea ulterior"
 
     - name: 3. Configurare Windows RDP
       run: |
-        # Activare RDP in Registri
+        # Activam RDP in Windows
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         
-        # Schimbam doar parola utilizatorului existent (fara sa incercam sa il cream din nou)
-        $user = "runneradmin"
-        $pass = "ParolaRDP123!"
-        net user $user $pass
+        # Setam parola pentru userul runneradmin (care exista deja)
+        # Nu folosim /add pentru a evita eroarea "Account already exists"
+        net user runneradmin ParolaRDP123!
         
-        # Pornim Bore pentru a crea tunelul TCP pe portul 3389
+        # Pornim Bore in fundal pentru a crea tunelul
         Start-Process ./bore.exe -ArgumentList "local 3389 --to bore.pub" -RedirectStandardOutput "bore.log"
 
-    - name: 4. Afisare Adresa si Auto-Sync (3 Ore)
+    - name: 4. Afisare Adresa si Bucla 3 Ore
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        Write-Host "Asteptam generarea adresei de conectare..."
-        Start-Sleep -Seconds 15
+        Write-Host "Asteptam generarea adresei de la Bore..."
+        Start-Sleep -Seconds 20
         
-        # Extragem adresa din log-urile Bore
+        # Citim log-ul Bore pentru a gasi portul alocat
         $boreLog = Get-Content "bore.log" -Raw
         if ($boreLog -match "listening at ([^\s]+)") {
             $address = $matches[1]
             Write-Host "`n==========================================" -ForegroundColor Green
             Write-Host "CONECTARE RDP REUSITA!" -ForegroundColor Green
-            Write-Host "ADRESA: ${address}" -ForegroundColor Yellow
-            Write-Host "USER: runneradmin"
-            Write-Host "PASS: ParolaRDP123!"
+            Write-Host "ADRESA DE PUS IN RDP: ${address}" -ForegroundColor Yellow
+            Write-Host "UTILIZATOR: runneradmin"
+            Write-Host "PAROLA: ParolaRDP123!"
             Write-Host "==========================================`n"
         } else {
-            Write-Host "Eroare: Bore nu a putut genera o adresa. Log-uri:" -ForegroundColor Red
+            Write-Host "Eroare: Bore nu a pornit. Verificam log-ul:" -ForegroundColor Red
             Get-Content "bore.log"
             exit 1
         }
         
-        # Bucla de mentinere activa si backup la 10 minute
+        # Bucla de backup si mentinere activa (3 ore)
         $count = 0
         while($count -lt 18) {
             Start-Sleep -Seconds 600
             $count++
-            Write-Host "--- (${count}/18) Sesiune activa. Salvare automata in Mega ---"
-            
+            Write-Host "Sesiune activa. Backup pasul ${count}/18..."
             $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
-            try {
-                cmd /c "mega-put -c C:\RDP_Work /RDP_Backup"
-                Write-Host "Backup realizat cu succes." -ForegroundColor Green
-            } catch {
-                Write-Host "Eroare la backup." -ForegroundColor Red
-            }
+            cmd /c "mega-put -c C:\RDP_Work /RDP_Backup"
         }
         
-        # Repornire automata
-        Write-Host "Sesiune expirata. Se restarteaza..."
+        # Auto-Restart
+        Write-Host "Restartare workflow..."
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
