@@ -1,4 +1,4 @@
-name: Windows-RDP-Serveo-Chrome
+name: Windows-RDP-Tailscale-Chrome-Final
 
 on: 
   workflow_dispatch:
@@ -13,68 +13,73 @@ jobs:
       actions: write
     
     steps:
-    - name: 1. Instalare Programe (Chrome, Mega)
+    - name: 1. Instalare Programe (Chrome, Mega, Tailscale)
       run: |
-        # Instalam Google Chrome si MegaCMD
-        choco install googlechrome megacmd -y
+        # Instalam browser-ul, utilitarul de backup si VPN-ul privat
+        choco install googlechrome megacmd tailscale -y
         
     - name: 2. Restaurare Date din Mega
       shell: cmd
       run: |
         set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd
+        # Autentificare si descarcare backup existent
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
         mkdir C:\RDP_Work
-        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - se va crea ulterior"
+        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - folderul va fi creat la final"
 
     - name: 3. Configurare Windows RDP
       run: |
-        # Activare RDP
+        # Activare Remote Desktop in registri
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         
-        # FIX: Doar schimbam parola userului existent (nu il cream din nou)
+        # Schimbam doar parola pentru runneradmin (utilizatorul exista deja in GitHub Actions)
         net user runneradmin ParolaRDP123!
-        
-        # Pornim Tunelul Serveo (TCP Tunneling gratuit prin SSH)
-        # Folosim portul 443 pentru a trece de firewall-uri
-        $ssh_cmd = "ssh -v -o StrictHostKeyChecking=no -o ServerAliveInterval=60 -R 0:localhost:3389 serveo.net"
-        Start-Process powershell -ArgumentList "-Command $ssh_cmd" -RedirectStandardError "tunnel.log" -RedirectStandardOutput "tunnel_out.log"
 
-    - name: 4. Extragere Adresa si Auto-Sync 3 Ore
+    - name: 4. Pornire Tailscale si Obtinere IP
+      shell: powershell
+      run: |
+        # Pornim serviciul Tailscale in fundal
+        Start-Service tailscale
+        
+        # Conectare automata folosind cheia de autentificare (Auth Key)
+        tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }}
+        
+        # Asteptam stabilizarea retelei si extragem IP-ul privat
+        Start-Sleep -Seconds 15
+        $ip = tailscale ip -4
+        
+        Write-Host "`n==========================================" -ForegroundColor Green
+        Write-Host "CONECTARE PRIN TAILSCALE ACTIVA!" -ForegroundColor Green
+        Write-Host "IP PRIVAT RDP: ${ip}" -ForegroundColor Yellow
+        Write-Host "USER: runneradmin"
+        Write-Host "PAROLA: ParolaRDP123!"
+        Write-Host "CHROME: Instalat si gata de folosire" -ForegroundColor Cyan
+        Write-Host "==========================================`n"
+        Write-Host "IMPORTANT: Trebuie sa ai Tailscale pornit si pe calculatorul tau!"
+
+    - name: 5. Mentinere Activa si Auto-Sync 3 Ore
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        Write-Host "Asteptam 30 de secunde pentru generarea adresei Serveo..."
-        Start-Sleep -Seconds 30
-        
-        # Cautam adresa in log-urile de eroare (unde Serveo trimite detaliile de debug)
-        $content = Get-Content "tunnel.log" -Raw
-        if ($content -match "Forwarding TCP connections from ([\w\d\.-]+:\d+)") {
-            $address = $matches[1]
-            Write-Host "`n==========================================" -ForegroundColor Green
-            Write-Host "CONECTARE RDP REUSITA (SERVEO):" -ForegroundColor Green
-            Write-Host "ADRESA RDP: ${address}" -ForegroundColor Yellow
-            Write-Host "USER: runneradmin"
-            Write-Host "PASS: ParolaRDP123!"
-            Write-Host "CHROME: Instalat si gata de folosire" -ForegroundColor Cyan
-            Write-Host "==========================================`n"
-        } else {
-            Write-Host "Eroare: Nu s-a putut gasi adresa in log-uri. Incercam log-ul de iesire standard..." -ForegroundColor Red
-            Get-Content "tunnel.log"
-            Get-Content "tunnel_out.log"
-            exit 1
-        }
-        
-        # Bucla de mentinere activa (3 ore)
+        # Bucla de backup: 18 cicluri a cate 10 minute (total 3 ore)
         $count = 0
         while($count -lt 18) {
             Start-Sleep -Seconds 600
             $count++
-            Write-Host "Sesiune activa (${count}/18)... Backup Mega in curs"
+            Write-Host "Sesiune activa (${count}/18)... Se salveaza backup-ul in Mega"
+            
             $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
-            try { cmd /c "mega-put -c C:\RDP_Work /RDP_Backup" } catch { }
+            try {
+                # Sincronizare folder de lucru cu cloud-ul Mega
+                cmd /c "mega-put -c C:\RDP_Work /RDP_Backup"
+                Write-Host "Backup finalizat cu succes." -ForegroundColor Green
+            } catch {
+                Write-Host "Eroare la backup!" -ForegroundColor Red
+            }
         }
         
-        # Restart automat
+        # Repornire automata a workflow-ului pentru sesiune infinita
+        Write-Host "Timpul a expirat. Se restarteaza sesiunea..."
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
