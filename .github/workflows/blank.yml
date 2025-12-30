@@ -14,40 +14,50 @@ jobs:
 
     steps:
     - name: 1. Instalare Ngrok + MEGAcmd
+      shell: pwsh
       run: |
         choco install ngrok megacmd -y
         refreshenv
 
-    - name: 2. Restaurare Date MEGA (cale corecta)
+        Write-Host "Verificare MEGAcmd in PATH..."
+        where.exe mega-cmd || exit 1
+
+    - name: 2. Restaurare Date MEGA (auto-detect)
       shell: pwsh
       run: |
-        $mega = "C:\ProgramData\chocolatey\lib\MEGAcmd\tools\mega-cmd.exe"
+        $megaCmd = (Get-Command mega-cmd.exe -ErrorAction SilentlyContinue).Source
 
-        if (!(Test-Path $mega)) {
-          Write-Error "MEGAcmd nu a fost gasit"
+        if (!$megaCmd) {
+          Write-Error "MEGAcmd nu este in PATH"
           exit 1
         }
 
-        & $mega login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
+        Write-Host "MEGAcmd gasit la: $megaCmd"
+
+        & $megaCmd login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
 
         if (!(Test-Path "C:\RDP_Work")) {
           New-Item -Path "C:\RDP_Work" -ItemType Directory
         }
 
-        & $mega get /RDP_Backup C:\RDP_Work
+        & $megaCmd get /RDP_Backup C:\RDP_Work
 
         Write-Host "Restaurare finalizata."
 
     - name: 3. Configurare RDP + Ngrok
       shell: pwsh
       run: |
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        Set-ItemProperty `
+          -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+          -Name "fDenyTSConnections" `
+          -Value 0
+
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
         net user runneradmin ParolaRDP123! /add
         net localgroup administrators runneradmin /add
 
-        $ngrok = "C:\ProgramData\chocolatey\bin\ngrok.exe"
+        $ngrok = (Get-Command ngrok.exe).Source
         & $ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
 
         Start-Process $ngrok -ArgumentList "tcp 3389"
@@ -67,12 +77,12 @@ jobs:
         Write-Host "PAROLA: ParolaRDP123!"
         Write-Host "=========================================="
 
-        $mega = "C:\ProgramData\chocolatey\lib\MEGAcmd\tools\mega-cmd.exe"
+        $megaCmd = (Get-Command mega-cmd.exe).Source
         $count = 0
 
         while ($count -lt 18) {
           Start-Sleep -Seconds 600
-          & $mega put -c C:\RDP_Work /RDP_Backup
+          & $megaCmd put -c C:\RDP_Work /RDP_Backup
           $count++
         }
 
