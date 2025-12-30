@@ -1,4 +1,4 @@
-name: Windows-RDP-Tailscale-Final-Safe
+name: Windows-RDP-Total-Silent
 
 on: 
   workflow_dispatch:
@@ -13,9 +13,9 @@ jobs:
       actions: write
     
     steps:
-    - name: 1. Instalare Programe (Chrome, Mega, Tailscale)
+    - name: 1. Instalare Programe (Chrome, Discord, Mega, Tailscale)
       run: |
-        choco install googlechrome megacmd tailscale -y
+        choco install googlechrome discord megacmd tailscale -y
         
     - name: 2. Restaurare Date din Mega
       shell: cmd
@@ -31,35 +31,49 @@ jobs:
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         net user runneradmin ParolaRDP123!
 
-    - name: 4. Pornire Tailscale SILENTIOS
+    - name: 4. Ascundere Fereastra Runner (Silent Background)
+      shell: powershell
+      run: |
+        # Script pentru a forta fereastra Runner.Listener sa devina invizibila
+        $definition = @"
+          [DllImport("user32.dll")]
+          public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        "@
+        $type = Add-Type -MemberDefinition $definition -Name "Win32ShowWindow" -Namespace "Win32" -PassThru
+        $hwnd = (Get-Process -Name "Runner.Listener").MainWindowHandle
+        if ($hwnd -ne 0) {
+            $type::ShowWindow($hwnd, 0) # 0 inseamna SW_HIDE (ascuns)
+            Write-Host "Fereastra Runner a fost ascunsa in fundal."
+        }
+
+    - name: 5. Pornire Tailscale SILENTIOS (6 ORE)
       shell: powershell
       run: |
         $tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
         Start-Service tailscale
         Start-Sleep -Seconds 5
-        
-        # Aici folosim secretul GitHub - sistemul nu il va mai anula automat!
-        & $tailscaleExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes --accept-dns=false
+        # Pornim Tailscale complet ascuns
+        Start-Process $tailscaleExe -ArgumentList "up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes --accept-dns=false" -WindowStyle Hidden
         
         Start-Sleep -Seconds 15
         $ip = & $tailscaleExe ip -4
         
         Write-Host "`n==========================================" -ForegroundColor Green
-        Write-Host "CONECTARE ACTIVA SI SECURIZATA!" -ForegroundColor Green
-        Write-Host "IP PRIVAT RDP: ${ip}" -ForegroundColor Yellow
+        Write-Host "PC GATA! TOTUL RULEAZA IN FUNDAL." -ForegroundColor Green
+        Write-Host "IP RDP: ${ip}" -ForegroundColor Yellow
         Write-Host "USER: runneradmin | PASS: ParolaRDP123!"
         Write-Host "==========================================`n"
 
-    - name: 5. Bucla Mentinere Activa si Sync (3 Ore)
+    - name: 6. Bucla Mentinere Activa (Maxim 6 Ore)
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         $count = 0
-        while($count -lt 18) {
+        while($count -lt 35) {
             Start-Sleep -Seconds 600
             $count++
-            Write-Host "Sesiune activa (${count}/18)..."
+            Write-Host "Sesiune activa (${count}/35)..."
             $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
             try { cmd /c "mega-put -c C:\RDP_Work /RDP_Backup" } catch { }
         }
