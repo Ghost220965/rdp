@@ -32,14 +32,14 @@ jobs:
         net user runneradmin ParolaRDP123! /add
         net localgroup administrators runneradmin /add
         ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-        Start-Process ngrok -ArgumentList "tcp 3389"
+        Start-Process ngrok -ArgumentList "tcp 3389 --log=stdout"
 
     - name: Conectare si Auto-Sync 3 Ore
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        # Asteptam ca ngrok sa porneasca API-ul local
+        # Asteptam ca ngrok sa porneasca complet API-ul local
         Start-Sleep -Seconds 10
 
         $tunnels = Invoke-RestMethod http://localhost:4040/api/tunnels
