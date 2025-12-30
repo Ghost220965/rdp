@@ -23,7 +23,7 @@ jobs:
         set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
         mkdir C:\RDP_Work
-        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup"
+        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - folderul va fi creat la final"
 
     - name: 3. Configurare Windows RDP
       run: |
@@ -38,8 +38,8 @@ jobs:
         Start-Service tailscale
         Start-Sleep -Seconds 5
         
-        # Folosim noua ta cheie. Asigura-te ca ai bifat REUSABLE la generare!
-        & $tailscaleExe up --authkey=tskey-auth-kjQWUGppWn11CNTRL-2JE3hG15N2PicZF9TTJz2PvZxBtmSnni --accept-routes --accept-dns=false
+        # Noua ta cheie Tailscale integrata direct
+        & $tailscaleExe up --authkey=tskey-auth-k4GcBHiYBj11CNTRL-RyW92FkdEm9ub2CaUiopm98Q9gN9dweQ --accept-routes --accept-dns=false
         
         Start-Sleep -Seconds 15
         $ip = & $tailscaleExe ip -4
