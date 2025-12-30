@@ -1,4 +1,4 @@
-name: Windows-RDP-Tailscale-Chrome-Final
+name: Windows-RDP-Tailscale-Final-Fixed
 
 on: 
   workflow_dispatch:
@@ -22,7 +22,6 @@ jobs:
       shell: cmd
       run: |
         set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd
-        # Autentificare si descarcare backup existent
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
         mkdir C:\RDP_Work
         mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - folderul va fi creat la final"
@@ -33,7 +32,7 @@ jobs:
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         
-        # Schimbam doar parola pentru runneradmin (utilizatorul exista deja in GitHub Actions)
+        # Schimbam doar parola pentru runneradmin (utilizatorul exista deja)
         net user runneradmin ParolaRDP123!
 
     - name: 4. Pornire Tailscale si Obtinere IP
@@ -41,20 +40,23 @@ jobs:
       run: |
         # Pornim serviciul Tailscale in fundal
         Start-Service tailscale
+        Start-Sleep -Seconds 5
+        
+        # Utilizam calea absoluta pentru a evita eroarea "term not recognized"
+        $tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
         
         # Conectare automata folosind cheia de autentificare (Auth Key)
-        tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }}
+        & $tailscaleExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes --accept-dns=false
         
         # Asteptam stabilizarea retelei si extragem IP-ul privat
-        Start-Sleep -Seconds 15
-        $ip = tailscale ip -4
+        Start-Sleep -Seconds 10
+        $ip = & $tailscaleExe ip -4
         
         Write-Host "`n==========================================" -ForegroundColor Green
         Write-Host "CONECTARE PRIN TAILSCALE ACTIVA!" -ForegroundColor Green
         Write-Host "IP PRIVAT RDP: ${ip}" -ForegroundColor Yellow
         Write-Host "USER: runneradmin"
         Write-Host "PAROLA: ParolaRDP123!"
-        Write-Host "CHROME: Instalat si gata de folosire" -ForegroundColor Cyan
         Write-Host "==========================================`n"
         Write-Host "IMPORTANT: Trebuie sa ai Tailscale pornit si pe calculatorul tau!"
 
