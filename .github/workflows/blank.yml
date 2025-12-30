@@ -23,21 +23,24 @@ jobs:
     - name: 3. RESTAURARE DESKTOP
       shell: powershell
       run: |
-        # Reincarcam variabilele de mediu pentru a gasi MEGAcmd proaspat instalat
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        
-        # Incercam sa gasim mega-login in locatiile standard daca PATH-ul inca nu e gata
+        # Definim calea directa catre MEGAcmd
         $megaPath = "C:\Program Files\MEGAcmd"
-        if (Test-Path $megaPath) { $env:PATH += ";$megaPath" }
+        $megaExe = "$megaPath\mega-login.exe"
+        $megaGet = "$megaPath\mega-get.exe"
+        
+        # Verificam daca exista directorul, daca nu, incercam variabila de utilizator
+        if (-not (Test-Path $megaExe)) {
+            $megaPath = "$env:LOCALAPPDATA\MEGAcmd"
+            $megaExe = "$megaPath\mega-login.exe"
+            $megaGet = "$megaPath\mega-get.exe"
+        }
 
-        mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
+        # Comenzi folosind calea completa
+        & $megaExe ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
+        
         $desktopPath = "C:\Users\runneradmin\Desktop"
+        & "$megaPath\mega-get.exe" /RDP_Backup $desktopPath
         
-        # Cream folderul de backup pe MEGA daca nu exista (ignora eroarea daca exista)
-        try { mega-mkdir /RDP_Backup } catch { }
-        
-        # Descarcam fisierele
-        mega-get /RDP_Backup $desktopPath
         if (Test-Path "Void.exe") { Copy-Item "Void.exe" "$desktopPath\Void.exe" -Force }
 
     - name: 4. Configurare RDP
@@ -57,17 +60,12 @@ jobs:
         $myIp = (& $tailscaleExe ip -4).Trim()
         echo "IP_ADDRESS=$myIp" >> $env:GITHUB_ENV
 
-    - name: 6. Notificare Discord (Versiune Simpla)
+    - name: 6. Notificare Discord
       shell: powershell
       run: |
         $webhookUrl = "${{ secrets.DISCORD_WEBHOOK }}"
         $ip = "${{ env.IP_ADDRESS }}"
-        
-        # Folosim un format JSON ultra-simplu fara caractere speciale
-        $msg = @{
-            content = "RDP Online! IP: $ip | User: runneradmin | Pass: ParolaRDP123!"
-        } | ConvertTo-Json
-
+        $msg = @{ content = "RDP Online! IP: $ip | User: runneradmin | Pass: ParolaRDP123!" } | ConvertTo-Json
         Invoke-RestMethod -Uri $webhookUrl -Method Post -Body $msg -ContentType "application/json"
 
     - name: 7. LANSARE APLICATII
@@ -83,14 +81,17 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
+        $megaPut = "C:\Program Files\MEGAcmd\mega-put.exe"
+        if (-not (Test-Path $megaPut)) { $megaPut = "$env:LOCALAPPDATA\MEGAcmd\mega-put.exe" }
+        
         $count = 0
         while($count -lt 66) {
             Start-Sleep -Seconds 300
             $count++
-            # Ne asiguram ca PATH-ul e corect in fiecare loop pentru MEGA
-            $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-            if (Test-Path "C:\Program Files\MEGAcmd") { $env:PATH += ";C:\Program Files\MEGAcmd" }
-            
-            try { mega-put -c C:\Users\runneradmin\Desktop /RDP_Backup } catch { Write-Host "Sync skip" }
+            try { 
+                & $megaPut -c C:\Users\runneradmin\Desktop /RDP_Backup 
+            } catch { 
+                Write-Host "Sync skip" 
+            }
         }
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
