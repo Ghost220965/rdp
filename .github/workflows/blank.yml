@@ -1,4 +1,4 @@
-name: Windows-RDP-Save-All-Apps
+name: Windows-RDP-Pro-5Min-Backup
 
 on: 
   workflow_dispatch:
@@ -14,68 +14,86 @@ jobs:
     
     steps:
     - name: 1. Preluare Void.exe din Repo
-      uses: actions/checkout@v4
+      uses: actions/checkout@v4 #
 
-    - name: 2. Instalare Nucleu (Poti adauga mai multe aici)
+    - name: 2. Instalare Nucleu (Chrome, Discord, Mega, Tailscale)
       run: |
-        # Adauga aici orice program vrei sa fie pre-instalat
-        choco install googlechrome discord megacmd tailscale vlc notepadplusplus -y
+        choco install googlechrome discord megacmd tailscale -y #
         
-    - name: 3. RESTAURARE TOT (Din Mega)
-      shell: cmd
+    - name: 3. RESTAURARE SI PREGATIRE Void.exe
+      shell: powershell
       run: |
-        set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd
+        $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
-        mkdir C:\RDP_Work
-        # Descarca folderul care contine TOATE aplicatiile tale portabile si fisierele
-        mega-get /RDP_Backup C:\RDP_Work || echo "Sesiune noua"
+        if (!(Test-Path "C:\RDP_Work")) { New-Item -ItemType Directory -Path "C:\RDP_Work" }
+        
+        # Descarca datele salvate anterior
+        cmd /c "mega-get /RDP_Backup C:\RDP_Work"
+        
+        # Asigura prezenta Void.exe in folderul de backup
+        if (Test-Path "Void.exe") { 
+            Copy-Item "Void.exe" "C:\RDP_Work\Void.exe" -Force 
+            Write-Host "Void.exe salvat in folderul de backup."
+        }
 
     - name: 4. Configurare RDP si Parola
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        net user runneradmin ParolaRDP123!
+        net user runneradmin ParolaRDP123! #
 
-    - name: 5. REPORNIRE AUTOMATA (Toate aplicatiile)
+    - name: 5. Activare GHOST MODE (Ascundere Runner)
       shell: powershell
       run: |
-        # 1. Deschide Void.exe
-        if (Test-Path "Void.exe") { Start-Process "Void.exe" }
-        
-        # 2. Deschide Discord si Chrome
-        Start-Process "chrome.exe"
-        $discord = "$env:LocalAppData\Discord\Update.exe"
-        if (Test-Path $discord) { Start-Process $discord -ArgumentList "--processStart Discord.exe" }
-        
-        # 3. Deschide automat ORICE gaseste in folderul de AutoStart din backup
-        $autoStartPath = "C:\RDP_Work\AutoStart"
-        if (Test-Path $autoStartPath) {
-            Get-ChildItem $autoStartPath | ForEach-Object { Start-Process $_.FullName }
+        $code = @"
+        using System;
+        using System.Runtime.InteropServices;
+        public class Ghost {
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+            [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+            [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
         }
+        "@
+        Add-Type -TypeDefinition $code
+        $hwnd = (Get-Process -Name "Runner.Listener" -ErrorAction SilentlyContinue).MainWindowHandle
+        if ($hwnd -and $hwnd -ne 0) {
+            [Ghost]::ShowWindow($hwnd, 0) # Ascunde complet fereastra runner-ului
+            [Ghost]::SetWindowLong($hwnd, -20, 0x00000080) # Sterge iconita din Taskbar
+        }
+
+    - name: 6. REPORNIRE APLICATII (Discord Fix inclus)
+      shell: powershell
+      run: |
+        if (Test-Path "C:\RDP_Work\Void.exe") { Start-Process "C:\RDP_Work\Void.exe" }
         
-        # Deschide folderul de lucru
+        # Cautare automata Discord (fix eroare cale)
+        $discordApp = Get-ChildItem -Path "$env:LocalAppData\Discord\app-*\Discord.exe" | Select-Object -First 1
+        if ($discordApp) { Start-Process $discordApp.FullName } else { Start-Process "$env:LocalAppData\Discord\Update.exe" -ArgumentList "--processStart Discord.exe" }
+        
+        Start-Process "chrome.exe"
         Start-Process "explorer.exe" -ArgumentList "C:\RDP_Work"
 
-    - name: 6. Conectare Tailscale (6 ORE)
+    - name: 7. Conectare Tailscale Securizat (6 ORE)
       shell: powershell
       run: |
         $tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
         Start-Service tailscale
         Start-Sleep -Seconds 5
-        & $tailscaleExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes --accept-dns=false
+        & $tailscaleExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes --accept-dns=false #
         Write-Host "IP RDP: $((& $tailscaleExe ip -4))"
 
-    - name: 7. SALVARE SI RESTART (La 6 Ore)
+    - name: 8. SALVARE LA 5 MINUTE SI RESTART
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         $count = 0
-        while($count -lt 35) { # 6 ore
-            Start-Sleep -Seconds 600
+        # 70 cicluri x 300 secunde (5 min) = 350 minute (5h 50min)
+        while($count -lt 70) {
+            Start-Sleep -Seconds 300
             $count++
+            Write-Host "Backup la 5 minute (${count}/70)..."
             $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
-            # Salveaza TOATE aplicatiile portabile si fisierele din C:\RDP_Work in Mega
             try { cmd /c "mega-put -c C:\RDP_Work /RDP_Backup" } catch { }
         }
-        gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
+        gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp #
