@@ -13,11 +13,11 @@ jobs:
       actions: write
     
     steps:
-    - name: Instalare Programe (Ngrok si Mega)
+    - name: 1. Instalare Programe (Ngrok si Mega)
       run: |
         choco install ngrok megacmd -y
         
-    - name: Restaurare Date din Mega
+    - name: 2. Restaurare Date din Mega
       shell: cmd
       run: |
         set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd
@@ -25,37 +25,77 @@ jobs:
         mkdir C:\RDP_Work
         mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - folderul va fi creat mai tarziu"
 
-    - name: Configurare Windows RDP
+    - name: 3. Configurare Windows RDP
       run: |
+        # Activare RDP
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        net user runneradmin ParolaRDP123! /add
+        
+        # Creare Utilizator (daca nu exista)
+        net user runneradmin ParolaRDP123! /add /y
         net localgroup administrators runneradmin /add
+        
+        # Configurare Ngrok
         ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-        Start-Process ngrok -ArgumentList "tcp 3389 --log=stdout"
+        # Pornim ngrok in background si salvam log-ul pentru erori
+        Start-Process ngrok -ArgumentList "tcp 3389 --region eu" -RedirectStandardOutput "ngrok.log"
 
-    - name: Conectare si Auto-Sync 3 Ore
+    - name: 4. Asteptare Conexiune si Auto-Sync 3 Ore
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        # Asteptam ca ngrok sa porneasca complet API-ul local
-        Start-Sleep -Seconds 10
+        $retryCount = 0
+        $maxRetries = 15
+        $tunnels = $null
 
-        $tunnels = Invoke-RestMethod http://localhost:4040/api/tunnels
-        Write-Host "=========================================="
-        Write-Host "ADRESA RDP: $($tunnels.tunnels[0].public_url)"
+        Write-Host "--- Asteptam ca Ngrok sa genereze URL-ul public ---"
+        
+        # Bucla de verificare API ngrok
+        while ($null -eq $tunnels -and $retryCount -lt $maxRetries) {
+            try {
+                $response = Invoke-RestMethod http://localhost:4040/api/tunnels -ErrorAction Stop
+                $tunnels = $response.tunnels
+            } catch {
+                $retryCount++
+                Write-Host "Tentativa $retryCount/$maxRetries: API-ul local nu raspunde inca. Reincercam in 5 secunde..."
+                Start-Sleep -Seconds 5
+            }
+        }
+
+        if ($null -eq $tunnels) {
+            Write-Host "EROARE: Ngrok nu a pornit corect. Continut log:" -ForegroundColor Red
+            if (Test-Path "ngrok.log") { Get-Content "ngrok.log" }
+            exit 1
+        }
+
+        $publicUrl = $tunnels[0].public_url
+        Write-Host "==========================================" -ForegroundColor Green
+        Write-Host "CONECTARE RDP DISPONIBILA:" -ForegroundColor Cyan
+        Write-Host "ADRESA: $publicUrl" -ForegroundColor Yellow
         Write-Host "UTILIZATOR: runneradmin"
         Write-Host "PAROLA: ParolaRDP123!"
-        Write-Host "=========================================="
+        Write-Host "==========================================" -ForegroundColor Green
         
+        # Bucla de Backup (Sync la fiecare 10 minute, timp de 3 ore)
         $count = 0
         while($count -lt 18) {
-          Start-Sleep -Seconds 600
-          Write-Host "Se salveaza backup-ul in Mega..."
-          $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
-          cmd /c "mega-put -c C:\RDP_Work /RDP_Backup"
-          $count++
+            Start-Sleep -Seconds 600
+            $count++
+            Write-Host "($count/18) Se efectueaza backup-ul in Mega..."
+            
+            # Adaugam calea catre Mega in env-ul curent
+            $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
+            
+            try {
+                # Sincronizam folderul local cu Mega
+                cmd /c "mega-put -c C:\RDP_Work /RDP_Backup"
+                Write-Host "Backup finalizat cu succes." -ForegroundColor Green
+            } catch {
+                Write-Host "Eroare la backup!" -ForegroundColor Red
+            }
         }
         
+        # Restart Workflow automat dupa 3 ore
+        Write-Host "Timpul a expirat. Se reporneste sesiunea..." -ForegroundColor Magenta
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
