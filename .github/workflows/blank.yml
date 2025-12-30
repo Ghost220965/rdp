@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2019 # Windows 10 style environment
     permissions:
       contents: write
       actions: write
@@ -18,61 +18,100 @@ jobs:
 
     - name: 2. Instalare Nucleu
       run: |
-        # Instalam Discord si restul fara a forta deschiderea lor imediata
+        # Instalam software-ul necesar
         choco install googlechrome discord megacmd tailscale -y
 
     - name: 3. RESTAURARE DESKTOP (Din Mega)
       shell: powershell
       run: |
         $env:PATH = "C:\Windows\system32;C:\Windows;C:\Program Files\MEGAcmd;C:\Users\runneradmin\AppData\Local\MEGAcmd;$env:PATH"
-        # Ne logam folosind secretele tale
+        # Login MEGA
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
         $desktopPath = "C:\Users\runneradmin\Desktop"
         
-        # Descarcam tot din RDP_Backup direct pe ecran
+        # Descarcam backup-ul existent
         mega-get /RDP_Backup $desktopPath
         if (Test-Path "Void.exe") { Copy-Item "Void.exe" "$desktopPath\Void.exe" -Force }
 
-    - name: 4. Configurare RDP
+    - name: 4. Configurare RDP & User
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         net user runneradmin ParolaRDP123!
+        # Previne blocarea sesiunii
+        Set-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System' -Name "DisableLockWorkstation" -Value 1
 
-    - name: 5. LANSARE APLICATII (Fix JavaScript Error)
-      shell: powershell
-      run: |
-        # 1. Pornire Void.exe de pe Desktop
-        if (Test-Path "C:\Users\runneradmin\Desktop\Void.exe") { Start-Process "C:\Users\runneradmin\Desktop\Void.exe" }
-        
-        # 2. Pornire Discord direct (sare peste Updater pentru a evita eroarea)
-        $discordExe = Get-ChildItem -Path "$env:LocalAppData\Discord\app-*\Discord.exe" | Select-Object -First 1
-        if ($discordExe) { 
-            # Pornim Discord cu flag-uri care previn erorile de JavaScript
-            Start-Process $discordExe.FullName -ArgumentList "--disable-gpu", "--no-sandbox"
-        }
-        
-        Start-Process "chrome.exe"
-
-    - name: 6. Conectare Tailscale
+    - name: 5. Conectare Tailscale
+      id: tailscale_setup
       shell: powershell
       run: |
         $tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
         Start-Service tailscale
         Start-Sleep -Seconds 5
         & $tailscaleExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes --accept-dns=false
-        Write-Host "IP-ul tau este: $((& $tailscaleExe ip -4))"
+        
+        $myIp = (& $tailscaleExe ip -4).Trim()
+        echo "IP_ADDRESS=$myIp" >> $env:GITHUB_ENV
+        Write-Host "IP-ul tau este: $myIp"
 
-    - name: 7. SALVARE LA 5 MINUTE
+    - name: 6. Notificare Discord Webhook
+      shell: powershell
+      run: |
+        $webhookUrl = "${{ secrets.DISCORD_WEBHOOK }}"
+        $ip = "${{ env.IP_ADDRESS }}"
+        $user = "runneradmin"
+        $pass = "ParolaRDP123!"
+        
+        $payload = @{
+            embeds = @(@{
+                title = "🚀 Windows RDP este Online!"
+                color = 5814783
+                fields = @(
+                    @{ name = "🌐 IP Tailscale"; value = "``$ip``"; inline = $true },
+                    @{ name = "👤 Utilizator"; value = "``$user``"; inline = $true },
+                    @{ name = "🔑 Parolă"; value = "``$pass``"; inline = $true },
+                    @{ name = "🖥️ OS"; value = "Windows 10 (Server 2019)"; inline = $false }
+                )
+                footer = @{ text = "GitHub Actions Auto-Sync Mode" }
+                timestamp = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
+            })
+        } | ConvertTo-Json -Depth 10
+
+        Invoke-RestMethod -Uri $webhookUrl -Method Post -Body $payload -ContentType "application/json"
+
+    - name: 7. LANSARE APLICATII
+      shell: powershell
+      run: |
+        # Pornire Void.exe
+        if (Test-Path "C:\Users\runneradmin\Desktop\Void.exe") { 
+            Start-Process "C:\Users\runneradmin\Desktop\Void.exe" 
+        }
+        
+        # Pornire Discord (Fix JavaScript Error / No Sandbox)
+        $discordExe = Get-ChildItem -Path "$env:LocalAppData\Discord\app-*\Discord.exe" | Select-Object -First 1
+        if ($discordExe) { 
+            Start-Process $discordExe.FullName -ArgumentList "--disable-gpu", "--no-sandbox"
+        }
+        
+        Start-Process "chrome.exe" -ArgumentList "--no-sandbox"
+
+    - name: 8. LOOP SALVARE & RESTART (5.5 ORE)
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         $count = 0
-        while($count -lt 70) {
+        # Rulam timp de 66 de cicluri a cate 5 minute (~5.5 ore)
+        while($count -lt 66) {
             Start-Sleep -Seconds 300
             $count++
             $env:PATH = "C:\Windows\system32;C:\Windows;C:\Program Files\MEGAcmd;C:\Users\runneradmin\AppData\Local\MEGAcmd;$env:PATH"
-            try { mega-put -c C:\Users\runneradmin\Desktop /RDP_Backup } catch { }
+            Write-Host "Sincronizare Desktop cu MEGA (Pas $count)..."
+            try { 
+                mega-put -c C:\Users\runneradmin\Desktop /RDP_Backup 
+            } catch { 
+                Write-Host "Eroare la sincronizare, dar continuam..."
+            }
         }
+        # Declanșează repornirea workflow-ului înainte de expirarea celor 6 ore
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
