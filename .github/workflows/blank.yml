@@ -1,4 +1,4 @@
-name: Windows-RDP-Tailscale-Silent
+name: Windows-RDP-Tailscale-Final-Fixed
 
 on: 
   workflow_dispatch:
@@ -23,37 +23,48 @@ jobs:
         set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
         mkdir C:\RDP_Work
-        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup"
+        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - folderul va fi creat la final"
 
     - name: 3. Configurare Windows RDP
       run: |
+        # Activare RDP
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        # Setam parola
         net user runneradmin ParolaRDP123!
 
-    - name: 4. Pornire Tailscale SILENTIOS si Obtinere IP
+    - name: 4. Pornire Tailscale si Verificare Conexiune
       shell: powershell
       run: |
-        # Pornim serviciul de sistem
-        Start-Service tailscale
-        Start-Sleep -Seconds 5
-        
         $tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
+        Start-Service tailscale
         
-        # Pornim procesul de conectare HIDDEN (fara fereastra de terminal)
-        Start-Process $tailscaleExe -ArgumentList "up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes --accept-dns=false" -WindowStyle Hidden
+        Write-Host "Incepem autentificarea Tailscale..."
+        # Executam direct pentru a asigura logarea (fara Hidden aici pentru a vedea erorile in log-ul GitHub)
+        & $tailscaleExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes --accept-dns=false
         
-        Start-Sleep -Seconds 15
-        $ip = & $tailscaleExe ip -4
+        # Bucla de asteptare pentru IP (max 1 minut)
+        $ip = ""
+        for ($i=0; $i -lt 12; $i++) {
+            $ip = & $tailscaleExe ip -4
+            if ($ip) { break }
+            Write-Host "Asteptam logarea... ($($i*5)s)"
+            Start-Sleep -Seconds 5
+        }
+
+        if (-not $ip) {
+            Write-Error "Eroare: Starea Tailscale este 'NeedsLogin'. Verifica TAILSCALE_AUTH_KEY in GitHub Secrets!"
+            exit 1
+        }
         
         Write-Host "`n==========================================" -ForegroundColor Green
-        Write-Host "CONECTARE ACTIVA (MOD SILENTIOS)!" -ForegroundColor Green
-        Write-Host "IP RDP: ${ip}" -ForegroundColor Yellow
+        Write-Host "CONECTARE ACTIVA!" -ForegroundColor Green
+        Write-Host "IP PRIVAT RDP: ${ip}" -ForegroundColor Yellow
         Write-Host "USER: runneradmin"
         Write-Host "PAROLA: ParolaRDP123!"
         Write-Host "==========================================`n"
 
-    - name: 5. Bucla Mentinere Activa si Sync (3 Ore)
+    - name: 5. Mentinere Activa si Auto-Sync 3 Ore
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
@@ -66,4 +77,5 @@ jobs:
             $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
             try { cmd /c "mega-put -c C:\RDP_Work /RDP_Backup" } catch { }
         }
+        # Repornire automata
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
