@@ -1,4 +1,4 @@
-name: Windows-RDP-Manual-Discord-Login
+name: Windows-RDP-Save-All-Apps
 
 on: 
   workflow_dispatch:
@@ -14,73 +14,68 @@ jobs:
     
     steps:
     - name: 1. Preluare Void.exe din Repo
-      uses: actions/checkout@v4 # Aduce Void.exe pe noul PC
+      uses: actions/checkout@v4
 
-    - name: 2. Instalare Nucleu (Chrome, Discord, Mega, Tailscale)
+    - name: 2. Instalare Nucleu (Poti adauga mai multe aici)
       run: |
-        # Instalam aplicatiile necesare sesiunii tale
-        choco install googlechrome discord megacmd tailscale -y
+        # Adauga aici orice program vrei sa fie pre-instalat
+        choco install googlechrome discord megacmd tailscale vlc notepadplusplus -y
         
-    - name: 3. RESTAURARE MEMORIE (Din Mega)
+    - name: 3. RESTAURARE TOT (Din Mega)
       shell: cmd
       run: |
         set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
         mkdir C:\RDP_Work
-        # Descarca automat progresul din sesiunea trecuta
+        # Descarca folderul care contine TOATE aplicatiile tale portabile si fisierele
         mega-get /RDP_Backup C:\RDP_Work || echo "Sesiune noua"
 
-    - name: 4. Configurare RDP si Silent Mode (Runner)
+    - name: 4. Configurare RDP si Parola
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         net user runneradmin ParolaRDP123!
-        # Ascundem iconita Runner-ului din Taskbar pentru un ecran curat
-        $code = @"
-        using System;
-        using System.Runtime.InteropServices;
-        public class Ghost {
-            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-            [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
-            [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
-        }
-        "@
-        Add-Type -TypeDefinition $code
-        $hwnd = (Get-Process -Name "Runner.Listener" -ErrorAction SilentlyContinue).MainWindowHandle
-        if ($hwnd -and $hwnd -ne 0) { [Ghost]::ShowWindow($hwnd, 0); [Ghost]::SetWindowLong($hwnd, -20, 0x00000080); }
 
-    - name: 5. REPORNIRE APLICATII (Manual Login Mode)
+    - name: 5. REPORNIRE AUTOMATA (Toate aplicatiile)
       shell: powershell
       run: |
-        # Deschide aplicatiile pe care le-ai cerut, gata pentru logare manuala
+        # 1. Deschide Void.exe
         if (Test-Path "Void.exe") { Start-Process "Void.exe" }
+        
+        # 2. Deschide Discord si Chrome
+        Start-Process "chrome.exe"
         $discord = "$env:LocalAppData\Discord\Update.exe"
         if (Test-Path $discord) { Start-Process $discord -ArgumentList "--processStart Discord.exe" }
-        Start-Process "chrome.exe"
+        
+        # 3. Deschide automat ORICE gaseste in folderul de AutoStart din backup
+        $autoStartPath = "C:\RDP_Work\AutoStart"
+        if (Test-Path $autoStartPath) {
+            Get-ChildItem $autoStartPath | ForEach-Object { Start-Process $_.FullName }
+        }
+        
+        # Deschide folderul de lucru
         Start-Process "explorer.exe" -ArgumentList "C:\RDP_Work"
 
-    - name: 6. Conectare Tailscale Securizat (6 ORE)
+    - name: 6. Conectare Tailscale (6 ORE)
       shell: powershell
       run: |
         $tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
         Start-Service tailscale
         Start-Sleep -Seconds 5
-        # Conectare folosind cheia Reusable din Secrets
         & $tailscaleExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes --accept-dns=false
         Write-Host "IP RDP: $((& $tailscaleExe ip -4))"
 
-    - name: 7. Salvare Continua si Auto-Restart
+    - name: 7. SALVARE SI RESTART (La 6 Ore)
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         $count = 0
-        while($count -lt 35) { # Rularea maxima de 6 ore
+        while($count -lt 35) { # 6 ore
             Start-Sleep -Seconds 600
             $count++
             $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
-            # Salvare automata a folderului C:\RDP_Work in Mega
+            # Salveaza TOATE aplicatiile portabile si fisierele din C:\RDP_Work in Mega
             try { cmd /c "mega-put -c C:\RDP_Work /RDP_Backup" } catch { }
         }
-        # Declanșează un nou PC când timpul expiră
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
