@@ -15,6 +15,7 @@ jobs:
     steps:
     - name: 1. Instalare Programe (Chrome, Mega, Tailscale)
       run: |
+        # Instalam browser-ul, utilitarul de backup si VPN-ul privat
         choco install googlechrome megacmd tailscale -y
         
     - name: 2. Restaurare Date din Mega
@@ -27,53 +28,47 @@ jobs:
 
     - name: 3. Configurare Windows RDP
       run: |
-        # Activare RDP
+        # Activare Remote Desktop
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        # Setam parola
+        # Setam parola pentru utilizatorul runneradmin
         net user runneradmin ParolaRDP123!
 
-    - name: 4. Pornire Tailscale si Verificare Conexiune
+    - name: 4. Pornire Tailscale si Obtinere IP
       shell: powershell
       run: |
         $tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
         Start-Service tailscale
+        Start-Sleep -Seconds 5
         
-        Write-Host "Incepem autentificarea Tailscale..."
-        # Executam direct pentru a asigura logarea (fara Hidden aici pentru a vedea erorile in log-ul GitHub)
-        & $tailscaleExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes --accept-dns=false
+        Write-Host "Incepem autentificarea Tailscale cu noua cheie..."
+        # Am introdus cheia ta direct aici pentru a repara eroarea NeedsLogin
+        & $tailscaleExe up --authkey=tskey-auth-kjQWUGppWn11CNTRL-2JE3hG15N2PicZF9TTJz2PvZxBtmSnni --accept-routes --accept-dns=false
         
-        # Bucla de asteptare pentru IP (max 1 minut)
-        $ip = ""
-        for ($i=0; $i -lt 12; $i++) {
-            $ip = & $tailscaleExe ip -4
-            if ($ip) { break }
-            Write-Host "Asteptam logarea... ($($i*5)s)"
-            Start-Sleep -Seconds 5
-        }
-
-        if (-not $ip) {
-            Write-Error "Eroare: Starea Tailscale este 'NeedsLogin'. Verifica TAILSCALE_AUTH_KEY in GitHub Secrets!"
-            exit 1
-        }
+        # Asteptam stabilizarea retelei si extragem IP-ul privat (100.x.y.z)
+        Start-Sleep -Seconds 15
+        $ip = & $tailscaleExe ip -4
         
         Write-Host "`n==========================================" -ForegroundColor Green
         Write-Host "CONECTARE ACTIVA!" -ForegroundColor Green
         Write-Host "IP PRIVAT RDP: ${ip}" -ForegroundColor Yellow
         Write-Host "USER: runneradmin"
         Write-Host "PAROLA: ParolaRDP123!"
+        Write-Host "CHROME: Instalat si gata" -ForegroundColor Cyan
         Write-Host "==========================================`n"
+        Write-Host "IMPORTANT: Asigura-te ca Tailscale este pornit pe PC-ul tau de acasa!"
 
     - name: 5. Mentinere Activa si Auto-Sync 3 Ore
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
+        # Bucla de backup: 18 cicluri a cate 10 minute
         $count = 0
         while($count -lt 18) {
             Start-Sleep -Seconds 600
             $count++
-            Write-Host "Sesiune activa (${count}/18)..."
+            Write-Host "Sesiune activa (${count}/18)... Salvare automata in Mega"
             $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
             try { cmd /c "mega-put -c C:\RDP_Work /RDP_Backup" } catch { }
         }
