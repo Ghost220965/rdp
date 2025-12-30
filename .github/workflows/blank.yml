@@ -1,4 +1,4 @@
-name: Windows-RDP-Fixed-Backup
+name: Windows-RDP-Fixed-Full
 
 on: 
   workflow_dispatch:
@@ -25,79 +25,75 @@ jobs:
         mkdir C:\RDP_Work
         mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - folderul va fi creat la final"
 
-    - name: 3. Configurare Windows RDP
+    - name: 3. Configurare Windows RDP si Ngrok
       run: |
         # Activare Remote Desktop
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         
-        # Creare utilizator runneradmin cu parola setata
+        # Creare utilizator runneradmin
         net user runneradmin ParolaRDP123! /add /y
         net localgroup administrators runneradmin /add
         
-        # Configurare Ngrok cu Token-ul din Secrets
-        ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-        
-        # Pornire Ngrok in fundal (regiunea EU pentru viteza mai buna)
-        Start-Process ngrok -ArgumentList "tcp 3389 --region eu" -RedirectStandardOutput "ngrok.log"
+        # Pornire Ngrok cu TOKEN-UL TAU DIRECT
+        # Am inclus token-ul tau in argumente pentru a fi sigur ca este citit corect
+        Start-Process ngrok -ArgumentList "tcp 3389 --authtoken 37XXW5GWmLHU3zijqJT2SF2jW5R_24FEinz8ZG6kbUhBrj53J --region eu --log=stdout" -RedirectStandardOutput "ngrok.log"
 
-    - name: 4. Conectare si Bucla Auto-Sync (3 Ore)
+    - name: 4. Verificare Conexiune si Afisare Date
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         $retryCount = 0
-        $maxRetries = 15
+        $maxRetries = 12
         $tunnels = $null
 
-        Write-Host "--- Se verifica pornirea Ngrok ---"
+        Write-Host "--- Asteptam ca Ngrok sa genereze URL-ul public ---"
         
-        # Bucla care asteapta ca Ngrok sa genereze URL-ul
         while ($null -eq $tunnels -and $retryCount -lt $maxRetries) {
             try {
                 $response = Invoke-RestMethod http://localhost:4040/api/tunnels -ErrorAction Stop
                 $tunnels = $response.tunnels
             } catch {
                 $retryCount++
-                # Folosim ${} pentru a evita erorile de tip 'InvalidVariableReference'
-                Write-Host "Tentativa ${retryCount}/${maxRetries}: Serverul local ngrok nu raspunde. Reincercam in 5s..."
+                Write-Host "Tentativa ${retryCount}/${maxRetries}: API-ul local nu raspunde. Reincercam in 5s..."
+                
+                # Daca dupa 5 incercari nu merge, afisam log-ul de eroare ngrok
+                if ($retryCount -eq 5) {
+                    Write-Host "--- DEPANARE: Continut log ngrok.log ---" -ForegroundColor Red
+                    if (Test-Path "ngrok.log") { Get-Content "ngrok.log" }
+                }
                 Start-Sleep -Seconds 5
             }
         }
 
         if ($null -eq $tunnels) {
-            Write-Host "EROARE FATALA: Ngrok nu a pornit corect." -ForegroundColor Red
-            if (Test-Path "ngrok.log") { Get-Content "ngrok.log" }
+            Write-Error "Ngrok nu a pornit corect cu token-ul furnizat."
             exit 1
         }
 
         $publicUrl = $tunnels[0].public_url
-        Write-Host "==========================================" -ForegroundColor Green
-        Write-Host "DATE CONECTARE RDP:" -ForegroundColor Cyan
-        Write-Host "IP/URL: ${publicUrl}" -ForegroundColor Yellow
+        Write-Host "`n==========================================" -ForegroundColor Green
+        Write-Host "CONECTARE RDP DISPONIBILA:" -ForegroundColor Cyan
+        Write-Host "ADRESA: ${publicUrl}" -ForegroundColor Yellow
         Write-Host "UTILIZATOR: runneradmin"
         Write-Host "PAROLA: ParolaRDP123!"
-        Write-Host "==========================================" -ForegroundColor Green
+        Write-Host "==========================================`n"
         
-        # Bucla de mentinere activa si backup (180 minute total)
-        # Face backup la fiecare 10 minute
+        # Mentinere activa si backup la 10 minute
         $count = 0
         while($count -lt 18) {
             Start-Sleep -Seconds 600
             $count++
-            Write-Host "--- (${count}/18) Salvare automata in Mega ---"
+            Write-Host "(${count}/18) Sesiune activa. Salvare automata in Mega..."
             
             $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
-            
             try {
-                # Sincronizeaza folderul de lucru cu cloud-ul Mega
                 cmd /c "mega-put -c C:\RDP_Work /RDP_Backup"
-                Write-Host "Backup finalizat cu succes." -ForegroundColor Green
             } catch {
-                Write-Host "Eroare la sincronizarea cu Mega!" -ForegroundColor Red
+                Write-Host "Eroare backup."
             }
         }
         
-        # Auto-Restart: Trimite un semnal catre GitHub sa porneasca workflow-ul din nou
-        Write-Host "Sesiunea de 3 ore a expirat. Se trimite comanda de restart..." -ForegroundColor Magenta
+        Write-Host "Sesiune terminata. Se restarteaza..."
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
