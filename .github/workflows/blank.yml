@@ -13,10 +13,10 @@ jobs:
       actions: write
     
     steps:
-    - name: 1. Instalare Programe (Mega si Bore)
+    - name: 1. Instalare Mega si Bore
       run: |
         choco install megacmd -y
-        # Descarcam Bore - alternativa care NU cere card bancar
+        # Descarcam Bore (nu are nevoie de card sau cont)
         Invoke-WebRequest https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-pc-windows-msvc.zip -OutFile bore.zip
         Expand-Archive bore.zip -DestinationPath .
 
@@ -26,55 +26,53 @@ jobs:
         set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
         mkdir C:\RDP_Work
-        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - se va crea ulterior"
+        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - se va crea la final"
 
     - name: 3. Configurare Windows RDP
       run: |
-        # Activam RDP in Windows
+        # Activare RDP
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         
-        # Setam parola pentru userul runneradmin (care exista deja)
-        # Nu folosim /add pentru a evita eroarea "Account already exists"
+        # Schimbam parola userului runneradmin (exista deja, nu il cream din nou)
         net user runneradmin ParolaRDP123!
         
         # Pornim Bore in fundal pentru a crea tunelul
         Start-Process ./bore.exe -ArgumentList "local 3389 --to bore.pub" -RedirectStandardOutput "bore.log"
 
-    - name: 4. Afisare Adresa si Bucla 3 Ore
+    - name: 4. Afisare Adresa si Auto-Sync 3 Ore
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        Write-Host "Asteptam generarea adresei de la Bore..."
+        Write-Host "Asteptam 20 de secunde pentru generarea adresei..."
         Start-Sleep -Seconds 20
         
-        # Citim log-ul Bore pentru a gasi portul alocat
+        # Citim adresa din log-ul Bore
         $boreLog = Get-Content "bore.log" -Raw
         if ($boreLog -match "listening at ([^\s]+)") {
             $address = $matches[1]
             Write-Host "`n==========================================" -ForegroundColor Green
             Write-Host "CONECTARE RDP REUSITA!" -ForegroundColor Green
-            Write-Host "ADRESA DE PUS IN RDP: ${address}" -ForegroundColor Yellow
+            Write-Host "ADRESA RDP: ${address}" -ForegroundColor Yellow
             Write-Host "UTILIZATOR: runneradmin"
             Write-Host "PAROLA: ParolaRDP123!"
             Write-Host "==========================================`n"
         } else {
-            Write-Host "Eroare: Bore nu a pornit. Verificam log-ul:" -ForegroundColor Red
+            Write-Host "Eroare: Bore nu a pornit. Log-uri:" -ForegroundColor Red
             Get-Content "bore.log"
             exit 1
         }
         
-        # Bucla de backup si mentinere activa (3 ore)
+        # Mentinere activa si backup la 10 minute (3 ore in total)
         $count = 0
         while($count -lt 18) {
             Start-Sleep -Seconds 600
             $count++
-            Write-Host "Sesiune activa. Backup pasul ${count}/18..."
+            Write-Host "Sesiune activa. Salvare automata in Mega (${count}/18)..."
             $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
-            cmd /c "mega-put -c C:\RDP_Work /RDP_Backup"
+            try { cmd /c "mega-put -c C:\RDP_Work /RDP_Backup" } catch { }
         }
         
         # Auto-Restart
-        Write-Host "Restartare workflow..."
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
