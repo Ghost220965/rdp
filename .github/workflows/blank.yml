@@ -1,4 +1,4 @@
-name: Windows-RDP-Bore-Final
+name: Windows-RDP-Pinggy-Final
 
 on: 
   workflow_dispatch:
@@ -13,12 +13,9 @@ jobs:
       actions: write
     
     steps:
-    - name: 1. Instalare Mega si Bore
+    - name: 1. Instalare MegaCMD
       run: |
         choco install megacmd -y
-        # Descarcam Bore (nu are nevoie de card sau cont)
-        Invoke-WebRequest https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-pc-windows-msvc.zip -OutFile bore.zip
-        Expand-Archive bore.zip -DestinationPath .
 
     - name: 2. Restaurare Date din Mega
       shell: cmd
@@ -26,7 +23,7 @@ jobs:
         set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
         mkdir C:\RDP_Work
-        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - se va crea la final"
+        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - se va crea ulterior"
 
     - name: 3. Configurare Windows RDP
       run: |
@@ -34,45 +31,47 @@ jobs:
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         
-        # Schimbam parola userului runneradmin (exista deja, nu il cream din nou)
+        # Setare parola pentru utilizatorul existent
         net user runneradmin ParolaRDP123!
         
-        # Pornim Bore in fundal pentru a crea tunelul
-        Start-Process ./bore.exe -ArgumentList "local 3389 --to bore.pub" -RedirectStandardOutput "bore.log"
+        # Pornire Tunel Pinggy prin SSH (Portul 443 este de obicei deschis peste tot)
+        # Nu necesita instalare, foloseste SSH-ul din Windows
+        $ssh_cmd = "ssh -T -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -p 443 -R0:localhost:3389 tcp@pinggy.io"
+        Start-Process powershell -ArgumentList "-Command $ssh_cmd" -RedirectStandardOutput "pinggy.log"
 
-    - name: 4. Afisare Adresa si Auto-Sync 3 Ore
+    - name: 4. Extragere Adresa Pinggy si Bucla 3 Ore
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        Write-Host "Asteptam 20 de secunde pentru generarea adresei..."
+        Write-Host "Asteptam 20 de secunde pentru adresa tunelului..."
         Start-Sleep -Seconds 20
         
-        # Citim adresa din log-ul Bore
-        $boreLog = Get-Content "bore.log" -Raw
-        if ($boreLog -match "listening at ([^\s]+)") {
+        # Citim log-ul pentru a gasi adresa de tip tcp://...
+        $content = Get-Content "pinggy.log" -Raw
+        if ($content -match "tcp://([\w\d\.-]+:\d+)") {
             $address = $matches[1]
             Write-Host "`n==========================================" -ForegroundColor Green
-            Write-Host "CONECTARE RDP REUSITA!" -ForegroundColor Green
+            Write-Host "CONECTARE RDP REUSITA (PINGGY):" -ForegroundColor Green
             Write-Host "ADRESA RDP: ${address}" -ForegroundColor Yellow
-            Write-Host "UTILIZATOR: runneradmin"
-            Write-Host "PAROLA: ParolaRDP123!"
+            Write-Host "USER: runneradmin"
+            Write-Host "PASS: ParolaRDP123!"
             Write-Host "==========================================`n"
         } else {
-            Write-Host "Eroare: Bore nu a pornit. Log-uri:" -ForegroundColor Red
-            Get-Content "bore.log"
+            Write-Host "Eroare: Pinggy nu a putut genera o adresa. Continut log:" -ForegroundColor Red
+            Write-Host $content
             exit 1
         }
         
-        # Mentinere activa si backup la 10 minute (3 ore in total)
+        # Bucla de backup 3 ore
         $count = 0
         while($count -lt 18) {
             Start-Sleep -Seconds 600
             $count++
-            Write-Host "Sesiune activa. Salvare automata in Mega (${count}/18)..."
+            Write-Host "Sesiune activa (${count}/18)... Salvare in Mega"
             $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
             try { cmd /c "mega-put -c C:\RDP_Work /RDP_Backup" } catch { }
         }
         
-        # Auto-Restart
+        # Restart
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
