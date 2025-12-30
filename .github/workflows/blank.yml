@@ -1,4 +1,4 @@
-name: Windows-RDP-Tailscale-Final-Fixed
+name: Windows-RDP-Tailscale-Final-Stable
 
 on: 
   workflow_dispatch:
@@ -15,20 +15,25 @@ jobs:
     steps:
     - name: 1. Instalare Programe (Chrome, Mega, Tailscale)
       run: |
+        # Instalam browser-ul, utilitarul de backup si VPN-ul privat
         choco install googlechrome megacmd tailscale -y
         
     - name: 2. Restaurare Date din Mega
       shell: cmd
       run: |
         set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd
+        # Autentificare si descarcare backup (daca exista)
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
         mkdir C:\RDP_Work
         mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - folderul va fi creat la final"
 
     - name: 3. Configurare Windows RDP
       run: |
+        # Activare Remote Desktop
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        
+        # FIX: Setam parola pentru runneradmin (utilizatorul exista deja implicit)
         net user runneradmin ParolaRDP123!
 
     - name: 4. Pornire Tailscale SILENTIOS
@@ -38,16 +43,21 @@ jobs:
         Start-Service tailscale
         Start-Sleep -Seconds 5
         
-        # Noua ta cheie Tailscale integrata direct
-        & $tailscaleExe up --authkey=tskey-auth-k4GcBHiYBj11CNTRL-RyW92FkdEm9ub2CaUiopm98Q9gN9dweQ --accept-routes --accept-dns=false
+        Write-Host "Incepem autentificarea Tailscale cu noua cheie REUSABLE..."
+        # Utilizam noua ta cheie direct in comanda
+        # Am adaugat -WindowStyle Hidden pentru ca procesul sa nu deschida ferestre negre pe RDP
+        Start-Process $tailscaleExe -ArgumentList "up --authkey=tskey-auth-kvgAwWrfh521CNTRL-2yRWPC8FFydAKS7CHd8sydVAqZV91fHG --accept-routes --accept-dns=false" -WindowStyle Hidden
         
+        # Asteptam logarea si extragem IP-ul
         Start-Sleep -Seconds 15
         $ip = & $tailscaleExe ip -4
         
         Write-Host "`n==========================================" -ForegroundColor Green
-        Write-Host "CONECTARE ACTIVA!" -ForegroundColor Green
+        Write-Host "CONECTARE ACTIVA PRIN TAILSCALE!" -ForegroundColor Green
         Write-Host "IP PRIVAT PENTRU RDP: ${ip}" -ForegroundColor Yellow
-        Write-Host "USER: runneradmin | PASS: ParolaRDP123!"
+        Write-Host "UTILIZATOR: runneradmin"
+        Write-Host "PAROLA: ParolaRDP123!"
+        Write-Host "CHROME: Instalat si gata" -ForegroundColor Cyan
         Write-Host "==========================================`n"
 
     - name: 5. Bucla Mentinere Activa si Sync Mega (3 Ore)
@@ -55,12 +65,20 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
+        # Bucla de backup la fiecare 10 minute
         $count = 0
         while($count -lt 18) {
             Start-Sleep -Seconds 600
             $count++
             Write-Host "Sesiune activa (${count}/18)... Se salveaza in Mega"
+            
             $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
-            try { cmd /c "mega-put -c C:\RDP_Work /RDP_Backup" } catch { }
+            try {
+                cmd /c "mega-put -c C:\RDP_Work /RDP_Backup"
+            } catch {
+                Write-Host "Eroare la backup!"
+            }
         }
+        
+        # Repornire automata
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
