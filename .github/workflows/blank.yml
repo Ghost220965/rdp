@@ -1,6 +1,6 @@
-name: Windows-RDP-Fixed-Path
+name: Windows-RDP-Fixed-Backup
 
-on:
+on: 
   workflow_dispatch:
   repository_dispatch:
     types: [restart_rdp]
@@ -11,79 +11,51 @@ jobs:
     permissions:
       contents: write
       actions: write
-
+    
     steps:
-    - name: 1. Instalare Ngrok + MEGAcmd
-      shell: pwsh
+    - name: Instalare Programe (Ngrok si Mega)
       run: |
         choco install ngrok megacmd -y
-        refreshenv
-
-        Write-Host "Verificare MEGAcmd in PATH..."
-        where.exe mega-cmd || exit 1
-
-    - name: 2. Restaurare Date MEGA (auto-detect)
-      shell: pwsh
+        
+    - name: Restaurare Date din Mega
+      shell: cmd
       run: |
-        $megaCmd = (Get-Command mega-cmd.exe -ErrorAction SilentlyContinue).Source
+        set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd
+        mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
+        mkdir C:\RDP_Work
+        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - folderul va fi creat mai tarziu"
 
-        if (!$megaCmd) {
-          Write-Error "MEGAcmd nu este in PATH"
-          exit 1
-        }
-
-        Write-Host "MEGAcmd gasit la: $megaCmd"
-
-        & $megaCmd login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
-
-        if (!(Test-Path "C:\RDP_Work")) {
-          New-Item -Path "C:\RDP_Work" -ItemType Directory
-        }
-
-        & $megaCmd get /RDP_Backup C:\RDP_Work
-
-        Write-Host "Restaurare finalizata."
-
-    - name: 3. Configurare RDP + Ngrok
-      shell: pwsh
+    - name: Configurare Windows RDP
       run: |
-        Set-ItemProperty `
-          -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-          -Name "fDenyTSConnections" `
-          -Value 0
-
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-
         net user runneradmin ParolaRDP123! /add
         net localgroup administrators runneradmin /add
+        ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+        Start-Process ngrok -ArgumentList "tcp 3389"
 
-        $ngrok = (Get-Command ngrok.exe).Source
-        & $ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-
-        Start-Process $ngrok -ArgumentList "tcp 3389"
-
-    - name: 4. Afisare RDP + Auto Backup
-      shell: pwsh
+    - name: Conectare si Auto-Sync 3 Ore
+      shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        Start-Sleep -Seconds 30
+        # Asteptam ca ngrok sa porneasca API-ul local
+        Start-Sleep -Seconds 10
 
         $tunnels = Invoke-RestMethod http://localhost:4040/api/tunnels
-
         Write-Host "=========================================="
         Write-Host "ADRESA RDP: $($tunnels.tunnels[0].public_url)"
-        Write-Host "USER: runneradmin"
+        Write-Host "UTILIZATOR: runneradmin"
         Write-Host "PAROLA: ParolaRDP123!"
         Write-Host "=========================================="
-
-        $megaCmd = (Get-Command mega-cmd.exe).Source
+        
         $count = 0
-
-        while ($count -lt 18) {
+        while($count -lt 18) {
           Start-Sleep -Seconds 600
-          & $megaCmd put -c C:\RDP_Work /RDP_Backup
+          Write-Host "Se salveaza backup-ul in Mega..."
+          $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
+          cmd /c "mega-put -c C:\RDP_Work /RDP_Backup"
           $count++
         }
-
+        
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
