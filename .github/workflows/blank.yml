@@ -1,4 +1,4 @@
-name: Windows-RDP-NoCard-Fixed
+name: Windows-RDP-Bore-Fixed
 
 on: 
   workflow_dispatch:
@@ -13,10 +13,10 @@ jobs:
       actions: write
     
     steps:
-    - name: 1. Instalare Programe (Mega si Utilitare)
+    - name: 1. Instalare Programe (Mega si Bore)
       run: |
         choco install megacmd -y
-        # Descarcam Bore (alternativa la Ngrok care nu cere card)
+        # Descarcam Bore (nu necesita cont sau card)
         Invoke-WebRequest https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-pc-windows-msvc.zip -OutFile bore.zip
         Expand-Archive bore.zip -DestinationPath .
 
@@ -26,54 +26,62 @@ jobs:
         set PATH=%PATH%;C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
         mkdir C:\RDP_Work
-        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - se va crea ulterior"
+        mega-get /RDP_Backup C:\RDP_Work || echo "Primul backup - folderul va fi creat la final"
 
     - name: 3. Configurare Windows RDP
       run: |
+        # Activare RDP in Registri
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        net user runneradmin ParolaRDP123! /add /y
-        net localgroup administrators runneradmin /add
         
-        # Pornim Bore in fundal
+        # Schimbam doar parola utilizatorului existent (fara sa incercam sa il cream din nou)
+        $user = "runneradmin"
+        $pass = "ParolaRDP123!"
+        net user $user $pass
+        
+        # Pornim Bore pentru a crea tunelul TCP pe portul 3389
         Start-Process ./bore.exe -ArgumentList "local 3389 --to bore.pub" -RedirectStandardOutput "bore.log"
 
-    - name: 4. Extragere Adresa si Auto-Sync 3 Ore
+    - name: 4. Afisare Adresa si Auto-Sync (3 Ore)
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        Write-Host "Asteptam ca Bore sa genereze adresa..."
-        Start-Sleep -Seconds 10
+        Write-Host "Asteptam generarea adresei de conectare..."
+        Start-Sleep -Seconds 15
         
-        # Citim log-ul Bore pentru a gasi adresa de conectare
+        # Extragem adresa din log-urile Bore
         $boreLog = Get-Content "bore.log" -Raw
         if ($boreLog -match "listening at ([^\s]+)") {
             $address = $matches[1]
             Write-Host "`n==========================================" -ForegroundColor Green
-            Write-Host "CONECTARE RDP GATA (FARA CARD):" -ForegroundColor Cyan
+            Write-Host "CONECTARE RDP REUSITA!" -ForegroundColor Green
             Write-Host "ADRESA: ${address}" -ForegroundColor Yellow
             Write-Host "USER: runneradmin"
             Write-Host "PASS: ParolaRDP123!"
             Write-Host "==========================================`n"
         } else {
-            Write-Host "Eroare la pornirea Bore. Log:"
+            Write-Host "Eroare: Bore nu a putut genera o adresa. Log-uri:" -ForegroundColor Red
             Get-Content "bore.log"
             exit 1
         }
         
-        # Bucla de backup 3 ore
+        # Bucla de mentinere activa si backup la 10 minute
         $count = 0
         while($count -lt 18) {
             Start-Sleep -Seconds 600
             $count++
-            Write-Host "(${count}/18) Backup automat in Mega..."
+            Write-Host "--- (${count}/18) Sesiune activa. Salvare automata in Mega ---"
+            
             $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
             try {
                 cmd /c "mega-put -c C:\RDP_Work /RDP_Backup"
+                Write-Host "Backup realizat cu succes." -ForegroundColor Green
             } catch {
-                Write-Host "Eroare backup."
+                Write-Host "Eroare la backup." -ForegroundColor Red
             }
         }
         
+        # Repornire automata
+        Write-Host "Sesiune expirata. Se restarteaza..."
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
