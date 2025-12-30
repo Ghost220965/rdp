@@ -1,4 +1,4 @@
-name: Windows-RDP-Pro-5Min-Backup
+name: Windows-RDP-Total-Desktop-Sync
 
 on: 
   workflow_dispatch:
@@ -13,36 +13,38 @@ jobs:
       actions: write
     
     steps:
-    - name: 1. Preluare Void.exe din Repo
-      uses: actions/checkout@v4 #
+    - name: 1. Preluare Fisiere (Checkout)
+      uses: actions/checkout@v4
 
-    - name: 2. Instalare Nucleu (Chrome, Discord, Mega, Tailscale)
+    - name: 2. Instalare Utilitare (Chrome, Mega, Tailscale)
       run: |
-        choco install googlechrome discord megacmd tailscale -y #
-        
-    - name: 3. RESTAURARE SI PREGATIRE Void.exe
+        # Instalam doar utilitarele de baza; Discord il vei avea din Mega sau Repo
+        choco install googlechrome megacmd tailscale -y
+
+    - name: 3. RESTAURARE TOTALA PE DESKTOP (Din Mega)
       shell: powershell
       run: |
-        $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
+        # Resetare PATH pentru a evita eroarea "Command not found"
+        $env:PATH = "C:\Windows\system32;C:\Windows;C:\Program Files\MEGAcmd;C:\Users\runneradmin\AppData\Local\MEGAcmd;$env:PATH"
+        
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
-        if (!(Test-Path "C:\RDP_Work")) { New-Item -ItemType Directory -Path "C:\RDP_Work" }
+        $desktopPath = "C:\Users\runneradmin\Desktop"
         
-        # Descarca datele salvate anterior
-        cmd /c "mega-get /RDP_Backup C:\RDP_Work"
+        # Descarca folderul de backup direct pe Desktop-ul noului PC
+        mega-get /RDP_Backup $desktopPath
         
-        # Asigura prezenta Void.exe in folderul de backup
+        # Daca ai Void.exe in repo, il punem si pe el pe Desktop
         if (Test-Path "Void.exe") { 
-            Copy-Item "Void.exe" "C:\RDP_Work\Void.exe" -Force 
-            Write-Host "Void.exe salvat in folderul de backup."
+            Copy-Item "Void.exe" "$desktopPath\Void.exe" -Force 
         }
 
-    - name: 4. Configurare RDP si Parola
+    - name: 4. Configurare RDP (User: runneradmin | Pass: ParolaRDP123!)
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        net user runneradmin ParolaRDP123! #
+        net user runneradmin ParolaRDP123!
 
-    - name: 5. Activare GHOST MODE (Ascundere Runner)
+    - name: 5. Activare GHOST MODE (Runner Invizibil)
       shell: powershell
       run: |
         $code = @"
@@ -57,43 +59,61 @@ jobs:
         Add-Type -TypeDefinition $code
         $hwnd = (Get-Process -Name "Runner.Listener" -ErrorAction SilentlyContinue).MainWindowHandle
         if ($hwnd -and $hwnd -ne 0) {
-            [Ghost]::ShowWindow($hwnd, 0) # Ascunde complet fereastra runner-ului
-            [Ghost]::SetWindowLong($hwnd, -20, 0x00000080) # Sterge iconita din Taskbar
+            [Ghost]::ShowWindow($hwnd, 0) # Ascunde consola
+            [Ghost]::SetWindowLong($hwnd, -20, 0x00000080) # Scoate iconita din Taskbar
         }
 
-    - name: 6. REPORNIRE APLICATII (Discord Fix inclus)
+    - name: 6. LANSARE APLICATII (De pe Desktop)
       shell: powershell
       run: |
-        if (Test-Path "C:\RDP_Work\Void.exe") { Start-Process "C:\RDP_Work\Void.exe" }
+        $desktopPath = "C:\Users\runneradmin\Desktop"
         
-        # Cautare automata Discord (fix eroare cale)
-        $discordApp = Get-ChildItem -Path "$env:LocalAppData\Discord\app-*\Discord.exe" | Select-Object -First 1
-        if ($discordApp) { Start-Process $discordApp.FullName } else { Start-Process "$env:LocalAppData\Discord\Update.exe" -ArgumentList "--processStart Discord.exe" }
+        # 1. Porneste Void.exe daca exista pe Desktop
+        if (Test-Path "$desktopPath\Void.exe") { Start-Process "$desktopPath\Void.exe" }
+        
+        # 2. Porneste Discord (Il cauta pe Desktop sau in folderul de instalare)
+        $discordDesktop = Get-ChildItem -Path "$desktopPath\**\Discord.exe" -Recurse | Select-Object -First 1
+        if ($discordDesktop) { 
+            Start-Process $discordDesktop.FullName 
+        } else {
+            # Daca nu e pe desktop, incearca locatia standard
+            $discordApp = Get-ChildItem -Path "$env:LocalAppData\Discord\app-*\Discord.exe" | Select-Object -First 1
+            if ($discordApp) { Start-Process $discordApp.FullName }
+        }
         
         Start-Process "chrome.exe"
-        Start-Process "explorer.exe" -ArgumentList "C:\RDP_Work"
 
-    - name: 7. Conectare Tailscale Securizat (6 ORE)
+    - name: 7. Conectare Tailscale (6 ORE)
       shell: powershell
       run: |
         $tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
         Start-Service tailscale
         Start-Sleep -Seconds 5
-        & $tailscaleExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes --accept-dns=false #
+        & $tailscaleExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes --accept-dns=false
         Write-Host "IP RDP: $((& $tailscaleExe ip -4))"
 
-    - name: 8. SALVARE LA 5 MINUTE SI RESTART
+    - name: 8. SALVARE DESKTOP -> MEGA (La fiecare 5 minute)
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         $count = 0
-        # 70 cicluri x 300 secunde (5 min) = 350 minute (5h 50min)
-        while($count -lt 70) {
+        $desktopPath = "C:\Users\runneradmin\Desktop"
+        
+        while($count -lt 70) { 
             Start-Sleep -Seconds 300
             $count++
-            Write-Host "Backup la 5 minute (${count}/70)..."
-            $env:PATH += ";C:\Users\runneradmin\AppData\Local\MEGAcmd;C:\Program Files\MEGAcmd"
-            try { cmd /c "mega-put -c C:\RDP_Work /RDP_Backup" } catch { }
+            Write-Host "Sincronizare Desktop -> Mega (${count}/70)..."
+            
+            $env:PATH = "C:\Windows\system32;C:\Windows;C:\Program Files\MEGAcmd;C:\Users\runneradmin\AppData\Local\MEGAcmd;$env:PATH"
+            
+            try {
+                # Sincronizeaza tot Desktop-ul (inclusiv folderul Discord daca il pui acolo)
+                mega-put -c $desktopPath /RDP_Backup
+                Write-Host "Succes: Tot ce e pe Desktop a fost salvat in Mega."
+            } catch {
+                Write-Host "Eroare la sincronizare."
+            }
         }
-        gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp #
+        # Repornire automata dupa 6 ore
+        gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
