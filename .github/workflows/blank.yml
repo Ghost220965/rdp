@@ -23,23 +23,22 @@ jobs:
     - name: 3. RESTAURARE DESKTOP
       shell: powershell
       run: |
-        # Definim calea directa catre MEGAcmd
-        $megaPath = "C:\Program Files\MEGAcmd"
-        $megaExe = "$megaPath\mega-login.exe"
-        $megaGet = "$megaPath\mega-get.exe"
+        # Cautam unde s-a instalat MEGAcmd pe tot discul C:
+        $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
         
-        # Verificam daca exista directorul, daca nu, incercam variabila de utilizator
-        if (-not (Test-Path $megaExe)) {
-            $megaPath = "$env:LOCALAPPDATA\MEGAcmd"
-            $megaExe = "$megaPath\mega-login.exe"
-            $megaGet = "$megaPath\mega-get.exe"
+        if ($megaDir) {
+            Write-Host "MEGAcmd gasit in: $megaDir"
+            $env:PATH += ";$megaDir"
+        } else {
+            Write-Error "MEGAcmd nu a fost gasit! Verificati instalarea."
+            exit 1
         }
 
-        # Comenzi folosind calea completa
-        & $megaExe ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
+        # Comenzi folosind noul PATH actualizat in timp real
+        mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
         
         $desktopPath = "C:\Users\runneradmin\Desktop"
-        & "$megaPath\mega-get.exe" /RDP_Backup $desktopPath
+        mega-get /RDP_Backup $desktopPath
         
         if (Test-Path "Void.exe") { Copy-Item "Void.exe" "$desktopPath\Void.exe" -Force }
 
@@ -81,15 +80,17 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        $megaPut = "C:\Program Files\MEGAcmd\mega-put.exe"
-        if (-not (Test-Path $megaPut)) { $megaPut = "$env:LOCALAPPDATA\MEGAcmd\mega-put.exe" }
-        
         $count = 0
         while($count -lt 66) {
             Start-Sleep -Seconds 300
             $count++
+            
+            # Re-identificam calea MEGA in loop pentru siguranta
+            $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+            if ($megaDir) { $env:PATH += ";$megaDir" }
+
             try { 
-                & $megaPut -c C:\Users\runneradmin\Desktop /RDP_Backup 
+                mega-put -c C:\Users\runneradmin\Desktop /RDP_Backup 
             } catch { 
                 Write-Host "Sync skip" 
             }
