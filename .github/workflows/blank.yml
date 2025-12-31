@@ -1,4 +1,4 @@
-name: Windows-RDP-Total-Desktop-Sync
+name: Windows-RDP-Total-Sync-Clean-Restore
 
 on: 
   workflow_dispatch:
@@ -18,31 +18,24 @@ jobs:
 
     - name: 2. Instalare Nucleu
       run: |
-        choco install googlechrome discord megacmd tailscale -y
+        choco install googlechrome megacmd tailscale -y
 
-    - name: 3. RESTAURARE DESKTOP
+    - name: 3. RESTAURARE TOTALĂ (Download din Cloud)
       shell: powershell
       run: |
-        # Cautam unde s-a instalat MEGAcmd pe tot discul C:
         $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+        if ($megaDir) { echo "$megaDir" >> $env:GITHUB_PATH }
         
-        if ($megaDir) {
-            Write-Host "MEGAcmd gasit in: $megaDir"
-            $env:PATH += ";$megaDir"
-        } else {
-            Write-Error "MEGAcmd nu a fost gasit! Verificati instalarea."
-            exit 1
-        }
-
-        # Comenzi folosind noul PATH actualizat in timp real
         mega-login ${{ secrets.MEGA_EMAIL }} ${{ secrets.MEGA_PASSWORD }}
         
-        $desktopPath = "C:\Users\runneradmin\Desktop"
-        mega-get /RDP_Backup $desktopPath
+        Write-Host "Se descarcă ultimul Restore Point de pe MEGA..."
+        # Descarcă datele salvate anterior
+        mega-get /RDP_Full_Backup/Desktop C:\Users\runneradmin\Desktop
+        mega-get /RDP_Full_Backup/AppData C:\Users\runneradmin\AppData\Roaming
         
-        if (Test-Path "Void.exe") { Copy-Item "Void.exe" "$desktopPath\Void.exe" -Force }
+        if (Test-Path "Void.exe") { Copy-Item "Void.exe" "C:\Users\runneradmin\Desktop\Void.exe" -Force }
 
-    - name: 4. Configurare RDP
+    - name: 4. Configurare RDP & Windows
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
@@ -52,30 +45,35 @@ jobs:
     - name: 5. Conectare Tailscale
       shell: powershell
       run: |
-        $tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
+        $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
         Start-Service tailscale
         Start-Sleep -Seconds 5
-        & $tailscaleExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes --accept-dns=false
-        $myIp = (& $tailscaleExe ip -4).Trim()
+        & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes --accept-dns=false
+        $myIp = (& $tsExe ip -4).Trim()
         echo "IP_ADDRESS=$myIp" >> $env:GITHUB_ENV
 
     - name: 6. Notificare Discord
       shell: powershell
       run: |
-        $webhookUrl = "${{ secrets.DISCORD_WEBHOOK }}"
-        $ip = "${{ env.IP_ADDRESS }}"
-        $msg = @{ content = "RDP Online! IP: $ip | User: runneradmin | Pass: ParolaRDP123!" } | ConvertTo-Json
-        Invoke-RestMethod -Uri $webhookUrl -Method Post -Body $msg -ContentType "application/json"
+        $msg = @{ content = "🔄 **RDP RESTARTAT** `nIP: ${{ env.IP_ADDRESS }} `nSistemul a fost curățat și restaurat la ultima stare salvată." } | ConvertTo-Json
+        Invoke-RestMethod -Uri ${{ secrets.DISCORD_WEBHOOK }} -Method Post -Body $msg -ContentType "application/json"
 
-    - name: 7. LANSARE APLICATII
+    - name: 7. LANSARE AUTOMATĂ (Fundal & Aplicații)
       shell: powershell
       run: |
+        $wp = "C:\Users\runneradmin\Desktop\wallpaper.jpg"
+        if (Test-Path $wp) {
+            $c = @'
+            [DllImport("user32.dll", CharSet = CharSet.Auto)]
+            public static extern int SystemParametersInfo(int uAction, int uParam, string lvParam, int fuWinIni);
+'@
+            Add-Type -MemberDefinition $c -Name "Win32" -Namespace "Win32Functions"
+            [Win32Functions.Win32]::SystemParametersInfo(0x0014, 0, $wp, 0x01)
+        }
         if (Test-Path "C:\Users\runneradmin\Desktop\Void.exe") { Start-Process "C:\Users\runneradmin\Desktop\Void.exe" }
-        $discordExe = Get-ChildItem -Path "$env:LocalAppData\Discord\app-*\Discord.exe" | Select-Object -First 1
-        if ($discordExe) { Start-Process $discordExe.FullName -ArgumentList "--disable-gpu", "--no-sandbox" }
         Start-Process "chrome.exe" -ArgumentList "--no-sandbox"
 
-    - name: 8. LOOP SALVARE & RESTART
+    - name: 8. LOOP SALVARE CU ȘTERGERE VECHE (Clean Sync)
       shell: powershell
       env:
         GH_TOKEN: ${{ github.token }}
@@ -85,14 +83,28 @@ jobs:
             Start-Sleep -Seconds 300
             $count++
             
-            # Re-identificam calea MEGA in loop pentru siguranta
-            $megaDir = Get-ChildItem -Path "C:\Program Files", "C:\Users\runneradmin\AppData\Local" -Filter "MEGAcmd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-            if ($megaDir) { $env:PATH += ";$megaDir" }
-
             try { 
-                mega-put -c C:\Users\runneradmin\Desktop /RDP_Backup 
+                Write-Host "Ciclul $count: Se șterge backup-ul vechi și se creează unul nou..."
+                
+                # --- LOGICA DE ȘTERGERE ȘI ÎNLOCUIRE ---
+                # Ștergem folderele vechi de pe MEGA pentru a evita duplicarea fișierelor șterse manual
+                mega-rm -r /RDP_Full_Backup/Desktop
+                mega-rm -r /RDP_Full_Backup/AppData
+                
+                # Încărcăm starea actuală "curată"
+                mega-put C:\Users\runneradmin\Desktop /RDP_Full_Backup/
+                mega-put C:\Users\runneradmin\AppData\Roaming /RDP_Full_Backup/
+                
+                Write-Host "Restore Point nou salvat cu succes."
             } catch { 
-                Write-Host "Sync skip" 
+                Write-Host "Sync skip - MEGA este ocupat sau fișierul este în uz." 
             }
         }
+        
+        # Salvare finală înainte de auto-restart
+        mega-rm -r /RDP_Full_Backup/Desktop
+        mega-rm -r /RDP_Full_Backup/AppData
+        mega-put C:\Users\runneradmin\Desktop /RDP_Full_Backup/
+        mega-put C:\Users\runneradmin\AppData\Roaming /RDP_Full_Backup/
+        
         gh api repos/${{ github.repository }}/dispatches -f event_type=restart_rdp
